@@ -230,18 +230,22 @@ def parse_args():
   pre-trained vgg19 convolutional neural network
   remark: layers are manually initialized for clarity.
 '''
-
+# construit le modèle de réseau de neurones convolutionnel VGG-19 en chargeant les poids pré-entraînés et en créant toutes les couches
+# nécessaires.
 def build_model(input_img):
   if args.verbose: print('\nBUILDING VGG-19 NETWORK')
   net = {}
+  # Récupère les dimensions de l'image d'entrée 
   _, h, w, d     = input_img.shape
-  
   if args.verbose: print('loading model weights...')
+  # Charge les poids pré-entraînés du modèle VGG-19 depuis le fichier spécifié par args.model_weights
   vgg_rawnet     = scipy.io.loadmat(args.model_weights)
+  #  Récupère les couches du modèle VGG-19 à partir des données chargées.
   vgg_layers     = vgg_rawnet['layers'][0]
   if args.verbose: print('constructing layers...')
+  # Crée une variable TensorFlow pour l'entrée du modèle, initialisée avec un tenseur de zéros de la même taille que l'image d'entrée.
   net['input']   = tf.Variable(np.zeros((1, h, w, d), dtype=np.float32))
-
+  # construit toutes les couches du modèle VGG-19
   if args.verbose: print('LAYER GROUP 1')
   net['conv1_1'] = conv_layer('conv1_1', net['input'], W=get_weights(vgg_layers, 0))
   net['relu1_1'] = relu_layer('relu1_1', net['conv1_1'], b=get_bias(vgg_layers, 0))
@@ -344,6 +348,7 @@ def get_bias(vgg_layers, i):
 '''
   'a neural algorithm for artistic style' loss functions
 '''
+#Perte de contenu
 def content_layer_loss(p, x):
   _, h, w, d = p.get_shape()
   M = h.value * w.value
@@ -356,7 +361,7 @@ def content_layer_loss(p, x):
     K = 1. / 2.
   loss = K * tf.reduce_sum(tf.pow((x - p), 2))
   return loss
-
+#Perte de style
 def style_layer_loss(a, x):
   _, h, w, d = a.get_shape()
   M = h.value * w.value
@@ -365,12 +370,12 @@ def style_layer_loss(a, x):
   G = gram_matrix(x, M, N)
   loss = (1./(4 * N**2 * M**2)) * tf.reduce_sum(tf.pow((G - A), 2))
   return loss
-
+# une représentation mathématique qui capture les relations statistiques entre les pixels d'une image.
 def gram_matrix(x, area, depth):
   F = tf.reshape(x, (area, depth))
   G = tf.matmul(tf.transpose(F), F)
   return G
-
+# Perte temporelle
 def mask_style_layer(a, x, mask_img):
   _, h, w, d = a.get_shape()
   mask = get_mask_image(mask_img, w.value, h.value)
