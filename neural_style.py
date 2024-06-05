@@ -348,7 +348,7 @@ def get_bias(vgg_layers, i):
 '''
   'a neural algorithm for artistic style' loss functions
 '''
-#Perte de contenu
+#Perte de contenu pour une couche donnée du réseau en utilisant la norme euclidienne au carré entre p et x, multipliée par un facteur de normalisation K qui dépend de la taille de la couche 
 def content_layer_loss(p, x):
   _, h, w, d = p.get_shape()
   M = h.value * w.value
@@ -361,7 +361,7 @@ def content_layer_loss(p, x):
     K = 1. / 2.
   loss = K * tf.reduce_sum(tf.pow((x - p), 2))
   return loss
-#Perte de style
+#Perte de style pour une couche donnée du réseau
 def style_layer_loss(a, x):
   _, h, w, d = a.get_shape()
   M = h.value * w.value
@@ -375,7 +375,9 @@ def gram_matrix(x, area, depth):
   F = tf.reshape(x, (area, depth))
   G = tf.matmul(tf.transpose(F), F)
   return G
-# Perte temporelle
+  # applique un masque à la couche de style pour contrôler la façon dont le style est transféré dans l'image générée,
+  # en mettant l'accent sur certaines régions spécifiques et en préservant d'autres régions inchangées.
+  # seules les régions non masquées (où le masque est égal à 1) contribuent à la perte.
 def mask_style_layer(a, x, mask_img):
   _, h, w, d = a.get_shape()
   mask = get_mask_image(mask_img, w.value, h.value)
@@ -389,7 +391,7 @@ def mask_style_layer(a, x, mask_img):
   a = tf.multiply(a, mask)
   x = tf.multiply(x, mask)
   return a, x
-
+#la perte de style totale en utilisant des masques d'image de style
 def sum_masked_style_losses(sess, net, style_imgs):
   total_style_loss = 0.
   weights = args.style_imgs_weights
@@ -407,7 +409,7 @@ def sum_masked_style_losses(sess, net, style_imgs):
     total_style_loss += (style_loss * img_weight)
   total_style_loss /= float(len(style_imgs))
   return total_style_loss
-
+# la perte de style totale ,Elle moyenne simplement les pertes de style de chaque image, pondérées par les poids 
 def sum_style_losses(sess, net, style_imgs):
   total_style_loss = 0.
   weights = args.style_imgs_weights
@@ -423,7 +425,7 @@ def sum_style_losses(sess, net, style_imgs):
     total_style_loss += (style_loss * img_weight)
   total_style_loss /= float(len(style_imgs))
   return total_style_loss
-
+#  la perte de contenu totale en utilisant l'image de contenu 
 def sum_content_losses(sess, net, content_img):
   sess.run(net['input'].assign(content_img))
   content_loss = 0.
@@ -436,15 +438,20 @@ def sum_content_losses(sess, net, content_img):
   return content_loss
 
 '''
-  'artistic style transfer for videos' loss functions
+  'artistic style transfer for videos' loss functions :
+  Ces fonctions sont utilisées conjointement avec les fonctions de perte de contenu et de style pour transférer 
+  le style artistique d'une ou plusieurs images de référence vers une vidéo,
+  tout en préservant la cohérence temporelle entre les images successives de la vidéo générée.
 '''
+# la perte temporelle entre une image d'entrée x et une image précédente  pour assurer une cohérence temporelle entre les images
+# successives de la vidéo générée.
 def temporal_loss(x, w, c):
   c = c[np.newaxis,:,:,:]
   D = float(x.size)
   loss = (1. / D) * tf.reduce_sum(c * tf.nn.l2_loss(x - w))
   loss = tf.cast(loss, tf.float32)
   return loss
-
+# Calcule le poids à attribuer à la perte temporelle entre l'image actuelle i et une image précédente i-j
 def get_longterm_weights(i, j):
   c_sum = 0.
   for k in range(args.prev_frame_indices):
@@ -453,7 +460,8 @@ def get_longterm_weights(i, j):
   c = get_content_weights(i, i - j)
   c_max = tf.maximum(c - c_sum, 0.)
   return c_max
-
+  
+# Calcule la somme des pertes temporelles à long terme pour une image donnée input_img de la vidéo
 def sum_longterm_temporal_losses(sess, net, frame, input_img):
   x = sess.run(net['input'].assign(input_img))
   loss = 0.
@@ -463,7 +471,7 @@ def sum_longterm_temporal_losses(sess, net, frame, input_img):
     c = get_longterm_weights(frame, prev_frame)
     loss += temporal_loss(x, w, c)
   return loss
-
+# alcule la perte temporelle à court terme pour une image donnée input_img de la vidéo, en considérant uniquement l'image précédente frame-1.
 def sum_shortterm_temporal_losses(sess, net, frame, input_img):
   x = sess.run(net['input'].assign(input_img))
   prev_frame = frame - 1
@@ -476,36 +484,43 @@ def sum_shortterm_temporal_losses(sess, net, frame, input_img):
   utilities and i/o
 '''
 def read_image(path):
-  # bgr image
+  # Lit une image à partir d'un chemin de fichier donné en utilisant OpenCV
   img = cv2.imread(path, cv2.IMREAD_COLOR)
+  #Vérifie que l'image a été correctement chargée
   check_image(img, path)
+  # Convertit l'image en float32 et appelle la fonction preprocess pour la prétraiter.
   img = img.astype(np.float32)
   img = preprocess(img)
   return img
 
 def write_image(path, img):
+  # Appelle la fonction postprocess pour post-traiter l'image avant l'écriture.
   img = postprocess(img)
+  # Écrit une image dans un fichier à un chemin donné en utilisant OpenCV
   cv2.imwrite(path, img)
 
 def preprocess(img):
   imgpre = np.copy(img)
-  # bgr to rgb
+  #Convertit l'image de BGR à RGB.
   imgpre = imgpre[...,::-1]
-  # shape (h, w, d) to (1, h, w, d)
+  # Ajoute une dimension "batch" de taille 1 à l'image: shape (h, w, d) to (1, h, w, d)
   imgpre = imgpre[np.newaxis,:,:,:]
+  # Soustrait les moyennes de chaque canal de couleur (probablement pour une normalisation).
   imgpre -= np.array([123.68, 116.779, 103.939]).reshape((1,1,1,3))
   return imgpre
 
 def postprocess(img):
   imgpost = np.copy(img)
+  # Ajoute les moyennes de chaque canal de couleur 
   imgpost += np.array([123.68, 116.779, 103.939]).reshape((1,1,1,3))
-  # shape (1, h, w, d) to (h, w, d)
+  # Supprime la dimension "batch" de taille 1: shape (1, h, w, d) to (h, w, d)
   imgpost = imgpost[0]
+  # Tronque les valeurs de pixels en dehors de l'intervalle [0, 255].
   imgpost = np.clip(imgpost, 0, 255).astype('uint8')
-  # rgb to bgr
+  # Convertit l'image de RGB à BGR.
   imgpost = imgpost[...,::-1]
   return imgpost
-
+# Lit un fichier de flux optique (utilisé pour l'estimation du mouvement dans les vidéos).
 def read_flow_file(path):
   with open(path, 'rb') as f:
     # 4 bytes header
@@ -519,7 +534,7 @@ def read_flow_file(path):
         flow[0,y,x] = struct.unpack('f', f.read(4))[0]
         flow[1,y,x] = struct.unpack('f', f.read(4))[0]
   return flow
-
+#Lit un fichier contenant des poids (probablement des cartes de saillance ou des masques).
 def read_weights_file(path):
   lines = open(path).readlines()
   header = list(map(int, lines[0].split(' ')))
@@ -533,17 +548,17 @@ def read_weights_file(path):
   # expand to 3 channels
   weights = np.dstack([vals.astype(np.float32)] * 3)
   return weights
-
+# Normalise une liste de poids pour qu'ils somment à 1.
 def normalize(weights):
   denom = sum(weights)
   if denom > 0.:
     return [float(i) / denom for i in weights]
   else: return [0.] * len(weights)
-
+# Crée un répertoire s'il n'existe pas déjà.
 def maybe_make_directory(dir_path):
   if not os.path.exists(dir_path):  
     os.makedirs(dir_path)
-
+# Vérifie si une image a été correctement chargée, sinon lève une exception.
 def check_image(img, path):
   if img is None:
     raise OSError(errno.ENOENT, "No such file", path)
@@ -565,7 +580,7 @@ def stylize(content_img, style_imgs, init_img, frame=None):
     # content loss
     L_content = sum_content_losses(sess, net, content_img)
     
-    # denoising loss
+    # Calcule la perte de variation totale pour la débruitage.
     L_tv = tf.image.total_variation(net['input'])
     
     # loss weights
@@ -573,12 +588,13 @@ def stylize(content_img, style_imgs, init_img, frame=None):
     beta  = args.style_weight
     theta = args.tv_weight
     
-    # total loss
+    # Combine ces pertes avec les poids pour obtenir la perte totale
     L_total  = alpha * L_content
     L_total += beta  * L_style
     L_total += theta * L_tv
     
-    # video temporal loss
+    #Si le transfert de style est effectué sur une vidéo et que le numéro de frame est supérieur à 1, elle ajoute la perte temporelle 
+    #à la perte totale avec un poids gamma.
     if args.video and frame > 1:
       gamma      = args.temporal_weight
       L_temporal = sum_shortterm_temporal_losses(sess, net, frame, init_img)
@@ -586,14 +602,17 @@ def stylize(content_img, style_imgs, init_img, frame=None):
 
     # optimization algorithm
     optimizer = get_optimizer(L_total)
-
+    
+    # Minimise la perte totale L_total en utilisant soit l'optimiseur Adam ou 'lbfgs'
     if args.optimizer == 'adam':
       minimize_with_adam(sess, net, optimizer, init_img, L_total)
     elif args.optimizer == 'lbfgs':
       minimize_with_lbfgs(sess, net, optimizer, init_img)
     
+    # Récupère l'image de sortie (output_img) après l'optimisation.
     output_img = sess.run(net['input'])
-    
+
+    # elle convertit les couleurs de output_img pour correspondre aux couleurs de l'image de contenu d'origine
     if args.original_colors:
       output_img = convert_to_original_colors(np.copy(content_img), output_img)
 
@@ -601,14 +620,16 @@ def stylize(content_img, style_imgs, init_img, frame=None):
       write_video_output(frame, output_img)
     else:
       write_image_output(output_img, content_img, style_imgs, init_img)
-
+      
+# Minimise la perte totale en utilisant l'optimiseur L-BFGS.
 def minimize_with_lbfgs(sess, net, optimizer, init_img):
   if args.verbose: print('\nMINIMIZING LOSS USING: L-BFGS OPTIMIZER')
   init_op = tf.global_variables_initializer()
   sess.run(init_op)
   sess.run(net['input'].assign(init_img))
   optimizer.minimize(sess)
-
+  
+# Minimise la perte totale en utilisant l'optimiseur Adam.
 def minimize_with_adam(sess, net, optimizer, init_img, loss):
   if args.verbose: print('\nMINIMIZING LOSS USING: ADAM OPTIMIZER')
   train_op = optimizer.minimize(loss)
@@ -622,25 +643,31 @@ def minimize_with_adam(sess, net, optimizer, init_img, loss):
       curr_loss = loss.eval()
       print("At iterate {}\tf=  {}".format(iterations, curr_loss))
     iterations += 1
-
+    
+# Construit et renvoie l'optimiseur approprié en fonction du choix de l'utilisateur
 def get_optimizer(loss):
   print_iterations = args.print_iterations if args.verbose else 0
   if args.optimizer == 'lbfgs':
+    # crée une instance de ScipyOptimizerInterface avec la méthode 'L-BFGS-B'.
     optimizer = tf.contrib.opt.ScipyOptimizerInterface(
       loss, method='L-BFGS-B',
       options={'maxiter': args.max_iterations,
                   'disp': print_iterations})
   elif args.optimizer == 'adam':
+    # crée une instance de AdamOptimizer avec le taux d'apprentissage spécifié (
     optimizer = tf.train.AdamOptimizer(args.learning_rate)
   return optimizer
-
+# Écrit l'image de sortie output_img dans un fichier vidéo en utilisant un format de nom de fichier spécifique basé sur le numéro de frame.
 def write_video_output(frame, output_img):
   fn = args.content_frame_frmt.format(str(frame).zfill(4))
   path = os.path.join(args.video_output_dir, fn)
   write_image(path, output_img)
 
+#Écrit l'image de sortie output_img, l'image de contenu content_img, les images de style style_imgs et l'image d'initialisation init_img dans des fichiers séparés.
 def write_image_output(output_img, content_img, style_imgs, init_img):
   out_dir = os.path.join(args.img_output_dir, args.img_name)
+  
+  # Crée un répertoire de sortie spécifique 
   maybe_make_directory(out_dir)
   img_path = os.path.join(out_dir, args.img_name+'.png')
   content_path = os.path.join(out_dir, 'content.png')
@@ -655,7 +682,7 @@ def write_image_output(output_img, content_img, style_imgs, init_img):
     write_image(path, style_img)
     index += 1
   
-  # save the configuration settings
+  # Écrit un fichier de métadonnées meta_data.txt contenant les paramètres de configuration utilisés pour le transfert de style.
   out_file = os.path.join(out_dir, 'meta_data.txt')
   f = open(out_file, 'w')
   f.write('image_name: {}\n'.format(args.img_name))
@@ -683,6 +710,7 @@ def write_image_output(output_img, content_img, style_imgs, init_img):
 '''
   image loading and processing
 '''
+# Cette fonction renvoie l'image d'initialisation appropriée pour le processus d'optimisation en fonction du type d'initialisation spécifié (init_type).
 def get_init_image(init_type, content_img, style_imgs, frame=None):
   if init_type == 'content':
     return content_img
@@ -698,13 +726,15 @@ def get_init_image(init_type, content_img, style_imgs, frame=None):
   elif init_type == 'prev_warped':
     init_img = get_prev_warped_frame(frame)
     return init_img
-
+    
+# Charge une image de contenu spécifique à partir d'une vidéo en utilisant le numéro de frame frame et le format de fichier args.content_frame_frmt.
 def get_content_frame(frame):
   fn = args.content_frame_frmt.format(str(frame).zfill(4))
   path = os.path.join(args.video_input_dir, fn)
   img = read_image(path)
   return img
-
+  
+# Charge une image de contenu statique à partir d'un fichier.
 def get_content_image(content_img):
   path = os.path.join(args.content_img_dir, content_img)
    # bgr image
@@ -713,7 +743,7 @@ def get_content_image(content_img):
   img = img.astype(np.float32)
   h, w, d = img.shape
   mx = args.max_size
-  # resize if > max size
+  # Redimensionne l'image si elle est plus grande que la taille maximale spécifiée
   if h > w and h > mx:
     w = (float(mx) / float(h)) * w
     img = cv2.resize(img, dsize=(int(w), mx), interpolation=cv2.INTER_AREA)
@@ -722,7 +752,8 @@ def get_content_image(content_img):
     img = cv2.resize(img, dsize=(mx, int(h)), interpolation=cv2.INTER_AREA)
   img = preprocess(img)
   return img
-
+  
+# Charge une ou plusieurs images de style à partir de fichiers spécifiés dans
 def get_style_images(content_img):
   _, ch, cw, cd = content_img.shape
   style_imgs = []
@@ -732,27 +763,35 @@ def get_style_images(content_img):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     check_image(img, path)
     img = img.astype(np.float32)
+    # Redimensionne chaque image de style aux dimensions de l'image de contenu.
     img = cv2.resize(img, dsize=(cw, ch), interpolation=cv2.INTER_AREA)
+    # Prétraite les images de style
     img = preprocess(img)
     style_imgs.append(img)
   return style_imgs
 
+# Génère une image de bruit aléatoire en mélangeant un bruit gaussien avec l'image de contenu, en utilisant un rapport de mélange spécifié (noise_ratio).
 def get_noise_image(noise_ratio, content_img):
   np.random.seed(args.seed)
   noise_img = np.random.uniform(-20., 20., content_img.shape).astype(np.float32)
   img = noise_ratio * noise_img + (1.-noise_ratio) * content_img
   return img
 
+
 def get_mask_image(mask_img, width, height):
+  # Charge une image de masque en niveaux de gris à partir d'un fichier spécifié
   path = os.path.join(args.content_img_dir, mask_img)
   img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
   check_image(img, path)
+  # Redimensionne le masque aux dimensions spécifiées
   img = cv2.resize(img, dsize=(width, height), interpolation=cv2.INTER_AREA)
+  # Normalise les valeurs de pixels du masque entre 0 et 1.
   img = img.astype(np.float32)
   mx = np.amax(img)
   img /= mx
   return img
 
+# Charge une image précédemment stylisée à partir d'un fichier vidéo de sortie, en utilisant le numéro de frame frame et le format de fichier
 def get_prev_frame(frame):
   # previously stylized frame
   prev_frame = frame - 1
@@ -795,9 +834,11 @@ def warp_image(src, flow):
     interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_TRANSPARENT)
   return dst
 
+# Convertit une image stylisée stylized_img pour qu'elle ait les mêmes couleurs que l'image de contenu d'origine content_img.
 def convert_to_original_colors(content_img, stylized_img):
   content_img  = postprocess(content_img)
   stylized_img = postprocess(stylized_img)
+  #Utilise une conversion d'espace colorimétrique spécifiée par args.color_convert_type (YUV, YCrCb, Luv ou Lab).
   if args.color_convert_type == 'yuv':
     cvt_type = cv2.COLOR_BGR2YUV
     inv_cvt_type = cv2.COLOR_YUV2BGR
@@ -814,18 +855,23 @@ def convert_to_original_colors(content_img, stylized_img):
   stylized_cvt = cv2.cvtColor(stylized_img, cvt_type)
   c1, _, _ = cv2.split(stylized_cvt)
   _, c2, c3 = cv2.split(content_cvt)
+  # Combine la luminance de l'image stylisée avec les deux autres canaux de l'image de contenu d'origine.
   merged = cv2.merge((c1, c2, c3))
+  # Convertit l'image résultante dans l'espace colorimétrique d'origine et la prétraite
   dst = cv2.cvtColor(merged, inv_cvt_type).astype(np.float32)
   dst = preprocess(dst)
   return dst
 
+# Fonction principale pour le rendu d'une image statique.
 def render_single_image():
   content_img = get_content_image(args.content_img)
   style_imgs = get_style_images(content_img)
   with tf.Graph().as_default():
     print('\n---- RENDERING SINGLE IMAGE ----\n')
+    # Obtient l'image d'initialisation appropriée (get_init_image).
     init_img = get_init_image(args.init_img_type, content_img, style_imgs)
     tick = time.time()
+    # Appelle la fonction stylize pour effectuer le transfert de style.
     stylize(content_img, style_imgs, init_img)
     tock = time.time()
     print('Single image elapsed time: {}'.format(tock - tick))
@@ -834,6 +880,7 @@ def render_video():
   for frame in range(args.start_frame, args.end_frame+1):
     with tf.Graph().as_default():
       print('\n---- RENDERING VIDEO FRAME: {}/{} ----\n'.format(frame, args.end_frame))
+      # Pour la première frame, charge l'image de contenu, les images de style et obtient l'image d'initialisation appropriée
       if frame == 1:
         content_frame = get_content_frame(frame)
         style_imgs = get_style_images(content_frame)
@@ -844,11 +891,13 @@ def render_video():
         tock = time.time()
         print('Frame {} elapsed time: {}'.format(frame, tock - tick))
       else:
+        # Pour les frames suivantes, charge l'image de contenu, les images de style et obtient l'image d'initialisation appropriée (
         content_frame = get_content_frame(frame)
         style_imgs = get_style_images(content_frame)
         init_img = get_init_image(args.init_frame_type, content_frame, style_imgs, frame)
         args.max_iterations = args.frame_iterations
         tick = time.time()
+        #  la fonction stylize pour effectuer le transfert de style sur chaque frame.
         stylize(content_frame, style_imgs, init_img, frame)
         tock = time.time()
         print('Frame {} elapsed time: {}'.format(frame, tock - tick))
